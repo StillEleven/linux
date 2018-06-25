@@ -13,6 +13,7 @@
 #include <linux/sysfs.h>
 #include <linux/spi/spi.h>
 #include <linux/delay.h>
+#include <linux/bsearch.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -173,8 +174,8 @@ static const struct ad5758_range ad5758_min_max_table[] = {
 };
 
 static const int ad5758_slew_rate_clk[16] = {
-	240000, 200000, 150000, 128000, 64000, 32000, 16000, 8000, 4000, 2000,
-	1000, 512, 256, 128, 64, 16
+	16, 64, 128, 256, 512, 1000, 2000, 4000, 8000, 16000, 32000, 64000,
+	128000, 150000, 200000, 240000
 };
 
 static const int ad5758_slew_rate_step[8] = {
@@ -239,16 +240,9 @@ static int ad5758_spi_write_mask(struct ad5758_state *st,
 	return ad5758_spi_reg_write(st, addr, regval);
 }
 
-static int ad5758_get_array_index(const int *array, unsigned int size, int val)
+int cmpfunc(const void *a, const void *b)
 {
-	int i;
-
-	for (i = 0; i < size; i++) {
-		if (val == array[i])
-			return i;
-	}
-
-	return -EINVAL;
+	return (*(int *)a - *(int *)b);
 }
 
 static int ad5758_wait_for_task_complete(struct ad5758_state *st,
@@ -638,18 +632,19 @@ static int ad5758_crc_disable(struct ad5758_state *st)
 static void ad5758_parse_dt(struct ad5758_state *st)
 {
 	unsigned int i, tmp, tmparray[3];
-	int index;
+	int *index;
 
 	st->dc_dc_ilim = 150;
 	if (!device_property_read_u32(&st->spi->dev,
 				      "adi,dc-dc-ilim", &tmp)) {
-		index = ad5758_get_array_index(ad5758_dc_dc_ilimt,
-					ARRAY_SIZE(ad5758_dc_dc_ilimt), tmp);
-		if (index < 0)
+		index = (int *) bsearch(&tmp, ad5758_dc_dc_ilimt,
+					ARRAY_SIZE(ad5758_dc_dc_ilimt),
+					sizeof(int), cmpfunc);
+		if (!index)
 			dev_warn(&st->spi->dev,
 				 "dc-dc-ilim out of range using default");
 		else
-			st->dc_dc_ilim = index;
+			st->dc_dc_ilim = index - ad5758_dc_dc_ilimt;
 	} else {
 		dev_dbg(&st->spi->dev,
 			 "Missing \"dc-dc-ilim\" property, using default\n");
@@ -685,25 +680,24 @@ static void ad5758_parse_dt(struct ad5758_state *st)
 					    tmparray, 3)) {
 		st->sr_config[0] = tmparray[0];
 
-		index = ad5758_get_array_index(ad5758_slew_rate_clk,
-					       ARRAY_SIZE(ad5758_slew_rate_clk),
-					       tmparray[1]);
-
-		if (index < 0)
+		index = (int *) bsearch(&tmparray[1], ad5758_slew_rate_clk,
+					ARRAY_SIZE(ad5758_slew_rate_clk),
+					sizeof(int), cmpfunc);
+		if (!index)
 			dev_warn(&st->spi->dev,
 				"slew rate clock out of range, using default");
 		else
-			st->sr_config[1] = index;
+			st->sr_config[1] = (ARRAY_SIZE(ad5758_slew_rate_clk) - 1) -
+					   (index - ad5758_slew_rate_clk);
 
-		index = ad5758_get_array_index(ad5758_slew_rate_step,
+		index = (int *) bsearch(&tmparray[2], ad5758_slew_rate_step,
 					ARRAY_SIZE(ad5758_slew_rate_step),
-					tmparray[2]);
-
-		if (index < 0)
+					sizeof(int), cmpfunc);
+		if (!index)
 			dev_warn(&st->spi->dev,
 				"slew rate step out of range, using default");
 		else
-			st->sr_config[2] = index;
+			st->sr_config[2] = index - ad5758_slew_rate_step;
 	} else {
 		dev_dbg(&st->spi->dev,
 			 "Missing \"slew\" property, using default\n");
